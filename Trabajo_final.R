@@ -1,6 +1,6 @@
 #=====================================================================
 
-#El host se muestra en el "dashboard" de la instancia como "DNS de IPv4 p鷅lica"
+#El host se muestra en el "dashboard" de la instancia como "DNS de IPv4 p?blica"
 library(DBI)
 library(RMySQL)
 library(VIM)
@@ -21,7 +21,7 @@ summary(poke)
 
 class(poke)
 
-# Conversi髇 de valores perdidos a NA (por defecto est醤 como 0)
+# Conversi?n de valores perdidos a NA (por defecto est?n como 0)
 
 poke$Type2[poke$Type2==""] <- NA
 
@@ -82,7 +82,65 @@ poke[is.na(poke)] <- "No aplica"
 
 library(ggplot2)
 
+# Exploraci贸n de Datos
+# Para determinar si se hace un an谩lisis de outlier por chi-square o Mahalanobis
+poke2 = poke[-c(1,2,3,4,11,12,13,14,15,16)]
+
+head(poke2,5)
+summary(poke2)
+boxplot(poke2)
+pairs(poke2) 
+
+par(mfrow = c(3,2))
+
+hist(poke2$HP)
+hist(poke2$Attack)
+hist(poke2$Defense)
+hist(poke2$SpAtk)
+hist(poke2$SpDef)
+hist(poke2$Speed)
+
+# Outliers usando la Puntuaci贸n Z
+# """""""""""""""""""""""""""""""
+
+is.outlier_z <- function(x, k=3) {
+  return(abs(scale(x)) > k)           # scale: (x-media)/desv_est
+}
+
+is.outlier_z(poke2)
+
+################# Variable HP ####################
+# 脥ndices (T/F) del Rango Intercuartilico
+idx_outliers_hp <- is.outlier_z(poke2$HP, k=3)
+which(idx_outliers_hp)
+
+# RI at铆picos
+poke2$HP[idx_outliers_hp]
+
+# Registros asociados con RI At铆pico
+poke2[idx_outliers_hp, ]
+
+# Seg煤n la puntuaci贸n Z se identifican 3 observaciones con valores at铆picos 
+# para Al, con K = 3 desv est谩ndar.
+
+# Al:
+par(mfrow=c(1,1))
 
 
+#################################################
+
+# Seg煤n Tukey (Boxplot) s贸lo se identifica 1 observaci贸n outlier.
 
 
+install.packages('robustbase')
+library(robustbase)
+
+# RI:
+par(mfrow=c(3,2))
+
+adjbox(poke2$HP) # Se observan 2 observaciones outliers   
+adjbox(poke2$Attack) # Se observan 1 observaciones outliers   
+adjbox(poke2$Defense) # Se observan 1 observaciones outliers   
+adjbox(poke2$SpAtk) # Se observan 4 observaciones outliers   
+adjbox(poke2$SpDef)  # Se observan 2 observaciones outliers y algunas observaciones con valores at铆picos    
+adjbox(poke2$Speed) # Se observan 4 observaciones outliers   
