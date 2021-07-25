@@ -154,24 +154,24 @@ which.max(dm2)
 
 # Distribución Chi-Cuadrado: Punto de Corte 
 p <- 1-0.001
-dof = ncol(df)
+dof = ncol(poke2)
 k <- (qchisq(p, dof))
 idx_outliers <- which(dm2 > k)
 idx_outliers
-df[idx_outliers,]
+poke2[idx_outliers,]
 
 #Con el 99.9% de la distribución se encuentran 5 observaciones posiblemente
 #outliers multivariados.
 
 # Gráfico de Ojiva
-plot(sort(dm2), ppoints(nrow(df)), xlab="DM al cuadrado ordenada", 
+plot(sort(dm2), ppoints(nrow(poke2)), xlab="DM al cuadrado ordenada", 
      ylab="Probabilidad Acumulada")
 abline(v = qchisq(p,dof), col = "red")
 
 # QQ-plot:
-x <- qchisq(ppoints(nrow(df)), dof)
+x <- qchisq(ppoints(nrow(poke2)), dof)
 y <- dm2
-qqplot(x, y, main=expression("Q-Q plot para"~~{chi^2}[nu==5]))
+qqplot(x, y, main=expression("Q-Q plot para"~~{chi^2}[nu==6]))
 abline(0, 1, col="red")
 
 #Con estos gráficos se confirma la existencia de observaciones outliers multivariadas.
