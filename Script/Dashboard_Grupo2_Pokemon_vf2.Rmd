@@ -1,0 +1,763 @@
+---
+title: "ggplotly geoms"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    social: menu
+    source_code: embed
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(shiny)
+library(tidyverse)
+library(hrbrthemes)
+library(viridis)
+library(reshape2)
+library (thematic)
+library(ggplot2)
+library(plotly)
+library(dplyr)
+library(e1071)
+library(modeest) 
+library(DBI)
+library(RMySQL)
+library(VIM)
+
+#Conexión a la BD de la máquina virtual EC2
+db <- dbConnect(RMySQL::MySQL(),
+                dbname = "pokemon",
+                host = "ec2-18-207-181-49.compute-1.amazonaws.com",
+                user = "usuario",
+                #password = rstudioapi::askForPassword("Database password"),
+                password = 'User1234+',
+                Port = 3306)
+
+# Se obtiene el arreglo de datos final desde la base SQL
+# El tratamiento de los datos se realizó en la etapa previa de procesamiento y exploración
+pkms<- dbGetQuery(db,'SELECT * FROM poke_final')
+
+# Eliminar los caracteres que se incluyeron en el campo Legendary al subir el arreglo de datos final
+pkms$Legendary=case_when(
+  pkms$Legendary  == 'False\r' ~ 'False',
+  pkms$Legendary  == 'True\r' ~ 'True'
+  )
+
+# Renombrar columnas para que coincidan con las del desarrollo inicial
+names(pkms)<- c('id','Name','Type.1','Type.2','Attack','Defense','HP','Speed','Sp..Atk','Sp..Def','Generation','Legendary')
+
+# incluir un campo genérico "has_type2" para indicar que pókemones tienen un segund tipo.
+# se utilizará posteriormente en el panel
+pkms$has_type2 <- ifelse(pkms$Type.2=='No aplica','N','Y')
+
+# Se obtiene una lista de nombres de las variables categóricas
+pks_bsc_attr<- c('Name','Type.1','Type.2','Legendary','Generation')
+
+# Se obtiene una lista de nombres de las variables numéricas
+pks_btl_attr<- c('Attack','Defense','HP','Speed','Sp..Atk','Sp..Def')
+
+# Se transpone la dataframe original (pkms), sólo variables categóricas: atributos básicos
+pkms_bsc <- melt(
+  pkms,
+  id.vars='Name',
+  measure.vars=pks_bsc_attr,
+  variable.name='Basic Attributes',
+  value.name='Value',
+  na.rm=TRUE)
+
+# Generar una matriz para comparar los promedios de las variables numericas de cada tipo de pokemon, se graficará posetriormente
+btl <- pkms[,c('Type.1',pks_btl_attr)]
+
+btl_avr<- btl%>%
+group_by(Type.1)%>% 
+summarise(Attack=mean(Attack),
+          Defense=mean(Defense),
+          HP=mean(HP),
+          Speed=mean(Speed),
+          Sp..Atk=mean(Sp..Atk),
+          Sp..Def=mean(Sp..Def)
+          )
+
+mtx <- as.matrix(btl_avr[,pks_btl_attr])
+row.names(mtx)<-btl_avr$Type.1
+
+
+# Se transpone la dataframe original (pkms), sólo variables numéricas: atributos de batalla
+pkms_btl <- melt(
+  pkms,
+  id.vars=c('Name','Type.1','Type.2','Legendary','has_type2'),
+  measure.vars=pks_btl_attr,
+  variable.name='Battle Attributes',
+  value.name='Value',
+  na.rm=TRUE)
+
+# Funcion para reindexar un DF
+ridx <- function(df){
+  #Devuelve el dataframe de ingreso reindexado
+  row.names(df)<-1:nrow(df)
+  return(df)
+}
+
+# Funcion para obtener los promedios de cada columna numérica
+get_fields_avgs <- function(df,nameOfNumCols){
+  avgrs<-c()
+  attbs_num <-length(nameOfNumCols)
+  
+  for (i in 1:attbs_num){
+    avg<- sum(df[nameOfNumCols[i]])/nrow(df[nameOfNumCols[i]])
+    avgrs[i]<-avg
+  }
+  
+  result <- as.data.frame(matrix(avgrs,1,attbs_num))
+  names(result)<-nameOfNumCols
+  result
+}
+
+# Función para generar los gráficos de barras circulares de la sección 5 del panel
+# transposed_data: Data transpuesta, cada atributo/variable debe ser una fila
+# crcl_rad: Radio máximo del circulo
+# Fuente: https://www.r-graph-gallery.com/index.html
+
+circular_bar_plot <- function(transposed_data,crcl_rad){
+  
+  units <- 25 # Se utiliza para el radio de los circulos internos
+  crcl_rad_units <- crcl_rad/units # num radios
+  
+  p<-ggplot(transposed_data) +
+  # Make custom panel grid
+  geom_hline(aes(yintercept = y),data.frame(y = c(0:crcl_rad_units) * units),color = "lightgrey") + 
+  # Add bars to represent the cumulative track lengths
+  # str_wrap(region, 5) wraps the text so each line has at most 5 characters
+  # (but it doesn't break long words!)
+  #Barras
+  geom_col(aes(x = reorder(str_wrap(Attributes, 5), Value),y = Value,fill = Value),position = "dodge2",show.legend = TRUE,alpha = .75) +
+  #Puntos para los promedios por clase
+  # Add dots to represent the mean of class
+  geom_point(aes(x = reorder(str_wrap(Attributes,5),Avrgs),y = Avrgs),size = 3,color = "gray12") +
+  
+  # Lineas punteeadas de cada categoría  
+  # Lollipop shaft for mean gain per region
+  geom_segment(aes(x = reorder(str_wrap(Attributes, 5), Value),y = 0,xend = reorder(str_wrap(Attributes, 5), Value),yend = crcl_rad - 25),linetype = "dashed",color ="gray12")+  
+  # Make it circular!
+  coord_polar()+
+  # Valores de los radios internos
+  # Annotate custom scale inside plot
+  annotate(x = 0, y = 25, label = "25", geom = "text", color = "gray12", size=2.5) +
+  annotate(x = 0, y = 50, label = "50", geom = "text", color = "gray12", size=2.5) +
+  annotate(x = 0, y = 75, label = "75", geom = "text", color = "gray12", size=2.5) +
+  annotate(x = 0, y = 100, label = "100", geom = "text", color = "gray12", size=2.5) +
+  annotate(x = 0, y = 125, label = "125", geom = "text", color = "gray12", size=2.5) +
+  annotate(x = 0, y = 150, label = "150", geom = "text", color = "gray12", size=2.5) +
+  # Scale y axis so bars don't start in the center
+  scale_y_continuous(limits = c(-25, crcl_rad),expand = c(0, 0),breaks = c(0:crcl_rad_units)*units) + 
+  # New fill and legend title for number of tracks per region
+  scale_fill_gradientn("Attribute value",colours = c( "#6C5B7B","#C06C84","#F67280","#F8B195")) +
+  # Make the guide for the fill discrete
+  guides(fill = guide_colorsteps(barwidth = 15, barheight = .5, title.position = "top", title.hjust = .5))+
+  theme(
+    # Remove axis ticks and text
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.y = element_blank(),
+    # Use gray text for the region names
+    axis.text.x = element_text(color = "gray12", size = 12),
+    # Move the legend to the bottom
+    legend.position = "bottom",
+  )+
+  theme(
+    # Set default color and font family for the text
+    text = element_text(color = "gray12"),
+    # Make the background white and remove extra grid lines
+    panel.background = element_rect(fill = "white", color = "white"),
+    panel.grid = element_blank(),
+    panel.grid.major.x = element_blank()
+  )
+  p
+}
+
+# Generar una lista de pókemons por cada typo 1
+
+Bug <- pkms$Name[pkms['Type.1']=='Bug']
+Dark <- pkms$Name[pkms['Type.1']=='Dark']
+Dragon <- pkms$Name[pkms['Type.1']=='Dragon']
+Electric <- pkms$Name[pkms['Type.1']=='Electric']
+Fairy <- pkms$Name[pkms['Type.1']=='Fairy']
+Fighting <- pkms$Name[pkms['Type.1']=='Fighting']
+Fire <- pkms$Name[pkms['Type.1']=='Fire']
+Flying <- pkms$Name[pkms['Type.1']=='Flying']
+Ghost <- pkms$Name[pkms['Type.1']=='Ghost']
+Grass <- pkms$Name[pkms['Type.1']=='Grass']
+Ground <- pkms$Name[pkms['Type.1']=='Ground']
+Ice <- pkms$Name[pkms['Type.1']=='Ice']
+Normal <- pkms$Name[pkms['Type.1']=='Normal']
+Poison <- pkms$Name[pkms['Type.1']=='Poison']
+Psychic <- pkms$Name[pkms['Type.1']=='Psychic']
+Rock <- pkms$Name[pkms['Type.1']=='Rock']
+Steel <- pkms$Name[pkms['Type.1']=='Steel']
+Water <- pkms$Name[pkms['Type.1']=='Water']
+
+# Generar histogramas de probabilidad acumulada y Densidad de probabilidad
+# Grafica la distribución por variable e indica la probabilidad segun los valores ingresados en los controles
+# de tipo Slider. se actualiza el control slider para que tenga el min y max de la variable
+# x:variable numerica
+# stp: steps del control slider
+# sldr_ctrl_name: nombre del control slider
+# sldr_ctrl: control slider, como objerto
+
+get_pop_hist <- function(x,stp,sldr_ctrl_name,sldr_ctrl){
+  
+   mn <- min(x) # valor minimo de la variable x
+   mx <-max(x) # valor máximo de la variable x
+   mu <- median(x) # media de la variable x
+   sdv <- sd(x) # desv standard de la variable x
+   med <- median(x) # media de la variable x
+   skwnss <- skewness(x) # skewness (asimetría) de la variable x
+
+   updateSliderInput(session, sldr_ctrl_name,min=mn,max = mx, step = 1)
+   
+   aval<-min(sldr_ctrl) # valor minimo seleccionado
+   bval<-max(sldr_ctrl) # valor maximo seleccionado
+   
+   mthd<-"" # Valor defecto del metodo
+   prob<-1.00 # valor defecto de la probabilidad
+   
+   # seleccion del metodo y calculo de la probabilidad
+   if(aval == mn & bval==mx){ 
+      prob<-1
+      mthd<-"test"
+   }else if (aval == mn){
+      prob<-pnorm(bval, mu, sdv)
+      mthd<-"DA.:"
+   }else if (bval == mx){
+      prob<-1-pnorm(aval, mu, sdv)
+      mthd<-"RC.:"
+   }else{
+      prob<-pnorm(bval, mu, sdv) - pnorm(aval, mu, sdv)  
+      mthd<-"DP.:"
+   }
+   
+   # Mensaje sobre el histograma
+   propmsg <- paste(mthd,'La probabilidad de tener Ataque de entre: ',aval,' y ',round(bval,2),' es de: ',round(prob*100,2),'%')
+   
+   # Graficar curva
+   p<-curve(dnorm(x, mu, sdv), mn, mx, xlab = "x", ylab = "f(x)")
+   # Graficar sombra
+   pshdw <- seq(aval, bval, 0.01)
+   lines (pshdw, dnorm(pshdw, mean = mu, sd = sdv), type = "h", col = "lightblue")
+   # Colocar el mensaje sobre el histograma
+   mtext(propmsg, side=3)
+   
+   return(p)
+  
+}
+```
+
+Introducción
+=======================================================================
+
+Row  
+-----------------------------------------------------------------------
+
+### Logo
+
+```{r}
+  renderImage({
+  #Mostrar imagen en la portada del panel
+  filename <- normalizePath(file.path('images/',paste('Pokemon_front.png', sep='')))
+    list(
+      src = filename,
+      contentType = "image/png",
+      width = 400,
+      alt = paste("Image ", input$cmbPokemon)
+     )
+  }, deleteFile = FALSE)
+```
+
+### Sobre el Tablero
+```{r}
+  renderImage({
+  #Mostrar imagen en la portada del panel - contenido
+  filename <- normalizePath(file.path('images/',paste('Pokemon_front_Content.jpg', sep='')))
+    list(
+      src = filename,
+      contentType = "image/jpeg",
+      width = 400,
+      alt = paste("Image ", input$cmbPokemon)
+     )
+  }, deleteFile = FALSE)
+```
+
+Tipos de Pokémon
+=======================================================================
+
+Row
+-----------------------------------------------------------------------
+
+### Distribución del tipo 1 de Pokémon
+
+```{r}
+dat2=na.omit(pkms)
+library(forcats)
+# Gráfico de barras, cantidades por tipo 1
+p <- ggplot(dat2, aes(x=fct_infreq(dat2$Type.1),..count..,fill=dat2$Type.1)) +
+            geom_bar()+
+            theme_minimal()+
+            labs(x="Tipos de Pokémon",y="Frecuencia")+
+            theme(legend.position = "none")
+           
+ggplotly(p)
+
+```
+
+Row
+-----------------------------------------------------------------------
+
+### Distribución del tipo 2 de Pokémon
+
+```{r}
+dat2=na.omit(pkms)
+library(forcats)
+# Gráfico de barras, cantidades por tipo 2
+p <- ggplot(dat2, aes(x=fct_infreq(dat2$Type.2),..count..,fill=dat2$Type.2)) +
+            geom_bar()+
+            theme_minimal()+
+            labs(x="Tipos de Pokémon 2",y="Frecuencia")+
+            theme(legend.position = "none")
+           
+ggplotly(p)
+```
+
+Data por Clase
+=======================================================================
+
+Row  
+-----------------------------------------------------------------------
+
+### Mapa de Calor
+
+```{r}
+  heatmap(mtx, Colv = NA, Rowv = NA, scale="column")
+```
+
+### Valores
+
+```{r}
+  renderTable(
+    btl_avr
+    )
+```
+
+Análisis Descriptivo
+=======================================================================
+
+Row
+-----------------------------------------------------------------------
+
+### Atributos Básicos del Pokemon
+
+```{r}
+  # Tabla con los atributos básicos del pokemon selecionado, se obtienen de la tabla transpuesta de atributos básicos
+  # se filtra la data por nombre
+  renderTable(
+    na.omit(pkms_bsc[which(pkms_bsc$Name == input$cmbPokemon_sel),c('Basic Attributes','Value')])
+    )
+```
+
+
+### Atributos de Batalla del Pokemon
+
+```{r}
+  # Tabla con los atributos de batalla del pokemon selecionado, se obtienen de la tabla transpuesta de atributos básicos
+  # se filtra la data por nombre
+  renderTable(
+    na.omit(pkms_btl[which(pkms_btl$Name == input$cmbPokemon_sel),c('Battle Attributes','Value')])
+    )
+```
+
+Row
+-----------------------------------------------------------------------
+
+### Atributos de batalla de la clase
+
+```{r}
+   renderPlot({
+      # Se obtiene el tipo 1 segun el pokemon seleccionado
+      sel_type <- pkms$Type.1[pkms['Name']==input$cmbPokemon_sel]
+      
+      #Se obtiene solo los pokemon que pertenecen al mismo tipo 1, se reindexa con la función ridx()
+      selpkms<-ridx(pkms_btl[which(pkms_btl$Type.1 == sel_type),])
+      
+      if(input$chkbox_Legendary==FALSE){
+         #Se filtran del arreglo los pokemon legendarios si se retira el check en el control para este fin
+         #se reindexa el arreglo con la funcion ridx
+         selpkms <-ridx(selpkms[which(selpkms$Legendary == 'False'),])
+      }
+      
+      if(input$chkbox_BiType==FALSE){
+         #Se filtran del arreglo los pokemon que tienen un tipo 2 si se retira el check en el control para este fin
+         #se reindexa el arreglo con la funcion ridx
+         selpkms<- ridx(selpkms[which(selpkms$has_type2 == 'N'),c('Battle Attributes','Value')])
+      }
+      
+      selpkms <- na.omit(selpkms)
+      
+      # Grafico de boxplot con jitter, muestra disperción de cada uno de los atributos
+      # fuente: https://www.r-graph-gallery.com/index.html
+      ggplot(selpkms,aes(x=`Battle Attributes`,y=Value,fill=`Battle Attributes`)) +
+      geom_boxplot() +
+      scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+      geom_jitter(color="black", size=0.4, alpha=0.9) +
+      theme_ipsum() +
+      theme(
+      legend.position="none",
+      plot.title = element_text(size=11)
+      ) +
+      xlab("")
+   })
+```
+
+### Correlación entre attributos de batalla
+
+```{r}
+renderPlot({
+   
+  # Nombre del pokemon selecionado
+   pkmName <- input$cmbPokemon_sel
+  
+  #Se obtiene solo los pokemon que pertenecen al mismo tipo 1, se reindexa con la función ridx()
+  sel_type <- pkms$Type.1[pkms['Name']==pkmName]
+  
+  #pkm<-pkms[which(pkms$Name==pkmName),c(input$var_1,input$var_2,pks_bsc_attr)]
+   
+  # se extrae una parte del dataframe original, se filtra sólo pokemones del mismo tipo y 
+  # sólo los campos:
+  # - seleccionados en el combo 1
+  # - seleccionados en el combo 2
+  # - Atritubos básicos (categírocs)
+  # - has_type2
+  selpkms <- pkms[which(pkms$Type.1 == sel_type),c(input$var_1,input$var_2,pks_bsc_attr,'has_type2')]
+   
+  #Se obtiene solo los pokemon que pertenecen al mismo tipo 1, se reindexa con la función ridx()
+   
+  if(input$chkbox_Legendary==FALSE){
+    #Se filtran del arreglo los pokemon legendarios si se retira el check en el control para este fin
+    #se reindexa el arreglo con la funcion ridx
+    selpkms <- ridx(selpkms[which(selpkms$Legendary != 'True'),])
+  }
+   
+  if(input$chkbox_BiType==FALSE){
+    #Se filtran del arreglo los pokemon que tienen un tipo 2 si se retira el check en el control para este fin
+    #se reindexa el arreglo con la funcion ridx
+    selpkms <- ridx(selpkms[which(selpkms$has_type2 == 'N'),])
+  }
+  
+  # Graficar gráfico de dispersión 
+  ggplot(selpkms, aes(x=selpkms[,1], y=selpkms[,2], color=Legendary, pch=has_type2, cex=1, alpha=.75)) +
+  geom_point()+
+  labs(title = "Correlación ", x = input$var_1, y = input$var_2)
+   
+})
+```
+
+Input{.sidebar}
+----------------------------------------------------------------
+### Entrada del usuario
+
+```{r}
+# Se genera un combobox con agrupaciones por tipo 1
+selectInput("cmbPokemon_sel", "Selecciona un Pokemon",
+                choices =
+                  list(`Bug` = Bug,
+                       `Dark` = Dark,
+                       `Dragon` = Dragon,
+                       `Electric` = Electric,
+                       `Fairy` = Fairy,
+                       `Fighting` = Fighting,
+                       `Fire` = Fire,
+                       `Flying` = Flying,
+                       `Ghost` = Ghost,
+                       `Grass` = Grass,
+                       `Ground` = Ground,
+                       `Ice` = Ice,
+                       `Normal` = Normal,
+                       `Poison` = Poison,
+                       `Psychic` = Psychic,
+                       `Rock` = Rock,
+                       `Steel` = Steel,
+                       `Water` = Water))
+```
+
+```{r}
+    # Checkbox para incluir pokemones legendarios en el analisis
+   checkboxInput("chkbox_Legendary", "Incluir Legendarios?", value = TRUE)
+```
+
+```{r}
+  # Checkbox para incluir pokemones legendarios en el analisis
+  checkboxInput("chkbox_BiType", "Incluir Pokemones con 2 Tipos?", value = TRUE)
+```
+
+```{r}
+  # Combo para seleccionar la variable x para incluir en el analisis bivariado
+  # pks_btl_attr: se le pasa la lista de variables numéricas
+  selectInput("var_1", "Seleccione la variable X", pks_btl_attr,selected = "Attack")
+```
+
+```{r}
+  # Combo para seleccionar la variable y para incluir en el analisis bivariado
+  # pks_btl_attr: se le pasa la lista de variables numéricas
+  selectInput("var_2", "Seleccione la variable Y", pks_btl_attr,selected = "Defense")
+```
+
+Probabilidad
+=======================================================================
+
+Input{.sidebar}
+----------------------------------------------------------------
+### Atributos de Batalla
+
+```{r}
+    # Combobox para seleccionar el tipo de pokemon
+    # Se le pasa la lista de Tipos unicos y ordenados
+    selectInput("cmd_Type", "Seleccione un Tipo de Pokemon", unique(sort(pkms$Type.1)), selected = 1)
+```
+
+```{r}
+    # Slider para seleccionar el rango de puntos de ataque para los cuales se desea conocer la probabilidad 
+    sliderInput("sldr_atk", "Selecciona un Rango para Ataque", value=c(50, 100),min=0, max=250, step=5)
+```
+
+```{r}
+    # Slider para seleccionar el rango de puntos de defensa para los cuales se desea conocer la probabilidad
+    sliderInput("sldr_def", "Selecciona un Rango para Defensa", value=c(50, 100),min=0, max=250, step=5)
+```
+
+```{r}
+    # Slider para seleccionar el rango de puntos de puntos de vida para los cuales se desea conocer la probabilidad
+    sliderInput("sldr_hp", "Selecciona un Rango para los Puntos de Vida", value=c(50, 100),min=0, max=250, step=5)
+```
+
+```{r}
+    # Slider para seleccionar el rango de puntos de Velocidad para los cuales se desea conocer la probabilidad 
+    sliderInput("sldr_spd", "Selecciona un Rango para Velocidad", value=c(50, 100),min=0, max=250, step=5)
+```
+
+```{r}
+    # Slider para seleccionar el rango de puntos de Velocidad de Ataque para los cuales se desea conocer la probabilidad
+    sliderInput("sldr_spd_atk", "Selecciona un Rango para Velocidad de Ataque", value=c(50, 100),min=0, max=250, step=5)
+```
+
+```{r}
+    # Slider para seleccionar el rango de puntos de Velocidad de Defensa para los cuales se desea conocer la probabilidad
+    sliderInput("sldr_spd_def", "Selecciona un Rango para Velocidad de Defensa", value=c(50, 100),min=0, max=250, step=5)
+```
+
+row {data-width=650}
+-----------------------------------------------------------------------
+
+### Distribución Acumulada / Densidad de Probabilidad: Ataque
+
+```{r}
+   renderPlot({
+    # Genera un histograma de probabilidad
+    # se le pasa un dataframe con pókemones de un tipo determinado
+    sel_pkms <- filter(pkms, pkms$Type.1 == input$cmd_Type)
+    x<-sel_pkms$Attack
+    get_pop_hist(x,5,'sldr_atk',input$sldr_atk)
+   })
+```
+
+### Distribución Acumulada / Densidad de Probabilidad: Defensa
+
+```{r}
+   renderPlot({
+    # Genera un histograma de probabilidad
+    # se le pasa un dataframe con pókemones de un tipo determinado
+    sel_pkms <- filter(pkms, pkms$Type.1 == input$cmd_Type)
+    x<-sel_pkms$Defense
+    get_pop_hist(x,5,'sldr_def',input$sldr_def)
+    
+   })
+```
+
+row {data-width=650}
+-----------------------------------------------------------------------
+
+### Distribución Acumulada / Densidad de Probabilidad: Salud
+
+```{r}
+   renderPlot({
+    # Genera un histograma de probabilidad
+    # se le pasa un dataframe con pókemones de un tipo determinado
+    sel_pkms <- filter(pkms, pkms$Type.1 == input$cmd_Type)
+    x<-sel_pkms$HP
+    get_pop_hist(x,5,'sldr_hp',input$sldr_hp)
+   })
+    
+```
+
+### Distribución Acumulada / Densidad de Probabilidad: Velocidad
+
+```{r}
+   renderPlot({
+    # Genera un histograma de probabilidad
+    # se le pasa un dataframe con pókemones de un tipo determinado
+    sel_pkms <- filter(pkms, pkms$Type.1 == input$cmd_Type)
+    x<-sel_pkms$Speed
+    get_pop_hist(x,5,'sldr_spd',input$sldr_spd)
+   })
+    
+```
+
+row {data-width=650}
+-----------------------------------------------------------------------
+
+### Distribución Acumulada / Densidad de Probabilidad: Velocidad de Ataque
+
+```{r}
+   renderPlot({
+    # Genera un histograma de probabilidad
+    # se le pasa un dataframe con pókemones de un tipo determinado
+    sel_pkms <- filter(pkms, pkms$Type.1 == input$cmd_Type)
+    x<-sel_pkms$Sp..Atk
+    get_pop_hist(x,5,'sldr_spd_atk',input$sldr_spd_atk)
+   })
+```
+
+### Distribución Acumulada / Densidad de Probabilidad: Velocidad de Defensa
+
+```{r}
+   renderPlot({
+    # Genera un histograma de probabilidad
+    # se le pasa un dataframe con pókemones de un tipo determinado
+    sel_pkms <- filter(pkms, pkms$Type.1 == input$cmd_Type)
+    x<-sel_pkms$Sp..Def
+    get_pop_hist(x,5,'sldr_spd_def',input$sldr_spd_def)
+   })
+    
+```
+
+Duelo Pokemon
+=======================================================================
+
+row {data-width=650}
+-----------------------------------------------------------------------
+
+### Pokemon 1
+
+```{r}
+    # Genera un combo box con los nombres de los pókemones, para seleccionar el pokemon 1
+    selectInput("cmbPokemon", "Seleccione un Pokemon", pkms$Name, selected = 'Pikachu')
+    # Genera un gráfico de barras circular que muestra los atributos de batalla del pokemon seleccionado
+    # Compara sus valores contra la media de la clase
+    renderPlot({
+    
+    # Se obtienen los atributos de batalla desde la tabla transpuesta de variables numéricas
+    # Se filtra sólo los registros que corresponden al pokemon seleccionado  
+    pkm <- pkms_btl[which(pkms_btl$Name ==input$cmbPokemon),c('Name','Battle Attributes','Value')]
+    # Se renombran las columnas del dataframe generado
+    names(pkm)<-c('Name','Attributes','Value')
+    # Se obtiene el tipo 1 del pokemon seleccionado
+    pkm_type <- pkms$Type.1[pkms$Name==input$cmbPokemon]
+    # Se obtiene una lista de los pokemones de la misma clase
+    pkms_bytype <- pkms[which(pkms$Type.1==pkm_type),c(pks_btl_attr)]
+    # Se obtiene los promedios de los atributos de batalla (variables numericas) de la clase
+    pkms_bytype_avrgs<-get_fields_avgs(pkms_bytype,pks_btl_attr)
+    # Se transponen los promedios
+    pkms_bytype_avrgs_t <- melt(
+      pkms_bytype_avrgs,
+      measure.vars=pks_btl_attr,
+      variable.name='Attributes',
+      value.name='Avrgs',
+      na.rm=TRUE)
+    
+    # Se combinan los dataframes de atributos del pokemon seleccionado con el dataframe de promedios.
+    # la llave es el nombre del atributo
+    pkm<-merge(pkm, pkms_bytype_avrgs_t, by = "Attributes")
+    
+    #Se establece el radio del grafico circular
+    crcl_rad <- ceiling(max(pkm[,c('Avrgs','Value')]*1.1/25))*25+25
+    
+    #Se muestra el gráfico
+    circular_bar_plot(pkm,crcl_rad)
+    
+  })
+   
+```
+
+### Pokemon 2
+
+```{r}
+    # Genera un combo box con los nombres de los pókemones, para seleccionar el pokemon 2
+   selectInput("cmbPokemon_2", "Seleccione un Pokemon retador", pkms$Name, selected = 'Charmander')
+   renderPlot({
+    # Genera un gráfico de barras circular que muestra los atributos de batalla del pokemon seleccionado
+    # Compara sus valores contra la media de la clase
+    pkm <- pkms_btl[which(pkms_btl$Name == input$cmbPokemon_2),c('Name','Battle Attributes','Value')]
+    # Se renombran las columnas del dataframe generado
+    names(pkm)<-c('Name','Attributes','Value')
+    # Se obtiene el tipo 1 del pokemon seleccionado
+    pkm_type <- pkms$Type.1[pkms$Name==input$cmbPokemon_2]
+    # Se obtiene una lista de los pokemones de la misma clase
+    pkms_bytype <- pkms[which(pkms$Type.1==pkm_type),c(pks_btl_attr)]
+    # Se obtiene los promedios de los atributos de batalla (variables numericas) de la clase
+    pkms_bytype_avrgs<-get_fields_avgs(pkms_bytype,pks_btl_attr)
+    # Se transponen los promedios
+    pkms_bytype_avrgs_t <- melt(
+      pkms_bytype_avrgs,
+      measure.vars=pks_btl_attr,
+      variable.name='Attributes',
+      value.name='Avrgs',
+      na.rm=TRUE)
+    
+    # Se combinan los dataframes de atributos del pokemon seleccionado con el dataframe de promedios.
+    # la llave es el nombre del atributo
+    pkm<-merge(pkm, pkms_bytype_avrgs_t, by = "Attributes")
+    #Se establece el radio del grafico circular
+    crcl_rad <- ceiling(max(pkm[,c('Avrgs','Value')]*1.1/25))*25+25
+    #Se muestra el gráfico
+    circular_bar_plot(pkm,crcl_rad)
+  })
+```
+
+row {data-width=650}
+-----------------------------------------------------------------------
+
+### Foto Pokemon 1
+
+```{r}
+   renderImage({
+      # Muestra la imagen que corresponde al nombre del pokemon 1 seleccionado.
+      # Se tiene una carpeta con los archivos de las imagenes, los nombres deben coincidir con los del combobox
+     
+      imgsz <- 120# Se establece el tamaño de la imagen
+      filename <- normalizePath(file.path('images/',paste(input$cmbPokemon,'.png', sep='')))
+        list(
+          src = filename,
+          contentType = "image/png",
+          width = imgsz,
+          height = imgsz,
+          alt = paste("Image ", input$cmbPokemon)
+         )
+    }, deleteFile = FALSE)
+```
+
+### Foto Pokemon 2
+
+```{r}
+   renderImage({
+      # Muestra la imagen que corresponde al nombre del pokemon 1 seleccionado.
+      # Se tiene una carpeta con los archivos de las imagenes, los nombres deben coincidir con los del combobox
+     
+      imgsz <- 120 # Se establece el tamaño de la imagen
+      filename <- normalizePath(file.path('images/',paste(input$cmbPokemon_2,'.png', sep='')))
+        list(
+          src = filename,
+          contentType = "image/png",
+          width = imgsz,
+          height = imgsz,
+          alt = paste("Image ", input$cmbPokemon)
+         )
+    }, deleteFile = FALSE)
+```
